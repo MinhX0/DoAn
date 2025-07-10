@@ -1,0 +1,18 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Stock Predictor",
+            "type": "shell",
+            "command": "C:/Users/Minh/.backend/Scripts/python.exe",
+            "args": [
+                "stock_predictor.py"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}
