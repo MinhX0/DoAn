@@ -9,11 +9,79 @@ import pandas as pd
 from stock_prediction_rf import StockPredictor
 
 
+
 # Global cache for ticker data
 ticker_data_cache = {}
 DEFAULT_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
 
+# CSV file paths
+TICKER_DATA_CSV = "prefetched_ticker_data.csv"
+USER_PREF_CSV = "user_preferences.csv"
+
+# User preferences cache (in-memory, loaded from CSV)
+user_preferences = set()
+
 app = FastAPI()
+
+# Endpoint: Get all tickers with current price and up/down indicator
+@app.get("/ticker_status")
+def get_ticker_status():
+    result = []
+    for symbol in DEFAULT_TICKERS:
+        # Try to get latest data from cache
+        df = ticker_data_cache.get(symbol)
+        price = None
+        prev_price = None
+        if df is not None and not df.empty:
+            # Assume last row is the latest
+            last_row = df.iloc[-1]
+            price = last_row['Close'] if 'Close' in last_row else None
+            # Try to get previous close for up/down
+            if len(df) > 1:
+                prev_row = df.iloc[-2]
+                prev_price = prev_row['Close'] if 'Close' in prev_row else None
+        else:
+            # Fallback: fetch data
+            predictor = StockPredictor(symbol)
+            if not predictor.fetch_data():
+                result.append({"symbol": symbol, "price": None, "indicator": "unknown"})
+                continue
+            df = predictor.data
+            if df is not None and not df.empty:
+                last_row = df.iloc[-1]
+                price = last_row['Close'] if 'Close' in last_row else None
+                if len(df) > 1:
+                    prev_row = df.iloc[-2]
+                    prev_price = prev_row['Close'] if 'Close' in prev_row else None
+                ticker_data_cache[symbol] = df.copy()
+                save_prefetched_data_to_csv()
+            else:
+                result.append({"symbol": symbol, "price": None, "indicator": "unknown"})
+                continue
+        # Clean up price values: convert NaN/inf to None, and cast to float
+        def safe_float(val):
+            try:
+                f = float(val)
+                if pd.isna(f) or pd.isnull(f) or f != f or f == float('inf') or f == float('-inf'):
+                    return None
+                return f
+            except Exception:
+                return None
+        price = safe_float(price)
+        prev_price = safe_float(prev_price)
+        # Determine up/down/unknown
+        if price is not None and prev_price is not None:
+            if price > prev_price:
+                indicator = "up"
+            elif price < prev_price:
+                indicator = "down"
+            else:
+                indicator = "no_change"
+        else:
+            indicator = "unknown"
+        result.append({"symbol": symbol, "price": price, "indicator": indicator})
+    return {"tickers": result}
+
 
 class PredictionRequest(BaseModel):
     symbol: str
@@ -48,11 +116,54 @@ def get_prediction_data(symbol: str = Query(..., description="Ticker symbol, e.g
         return {"error": str(e), "trace": traceback.format_exc()}
 
 
+
+# Helper: Save all prefetched ticker data to CSV (one file, with symbol column)
+def save_prefetched_data_to_csv():
+    all_data = []
+    for symbol, df in ticker_data_cache.items():
+        df = df.copy()
+        df['symbol'] = symbol
+        all_data.append(df)
+    if all_data:
+        full_df = pd.concat(all_data)
+        full_df.to_csv(TICKER_DATA_CSV, index=False)
+
+# Helper: Load prefetched ticker data from CSV
+def load_prefetched_data_from_csv():
+    try:
+        df = pd.read_csv(TICKER_DATA_CSV)
+        for symbol in df['symbol'].unique():
+            ticker_data_cache[symbol] = df[df['symbol'] == symbol].drop(columns=['symbol'])
+        print(f"Loaded prefetched ticker data from {TICKER_DATA_CSV}")
+    except Exception as e:
+        print(f"No prefetched ticker data found: {e}")
+
+# Helper: Save user preferences to CSV
+def save_user_preferences_to_csv():
+    if user_preferences:
+        pref_df = pd.DataFrame({"symbol": list(user_preferences)})
+        pref_df.to_csv(USER_PREF_CSV, index=False)
+
+# Helper: Load user preferences from CSV
+def load_user_preferences_from_csv():
+    try:
+        df = pd.read_csv(USER_PREF_CSV)
+        user_preferences.clear()
+        for _, row in df.iterrows():
+            user_preferences.add(row['symbol'])
+        print(f"Loaded user preferences from {USER_PREF_CSV}")
+    except Exception as e:
+        print(f"No user preferences found: {e}")
+
 # Prefetch ticker data at startup
 @app.on_event("startup")
 def prefetch_ticker_data():
     print("Prefetching ticker data for:", DEFAULT_TICKERS)
+    load_prefetched_data_from_csv()
+    load_user_preferences_from_csv()
     for symbol in DEFAULT_TICKERS:
+        if symbol in ticker_data_cache:
+            continue
         try:
             predictor = StockPredictor(symbol)
             if predictor.fetch_data():
@@ -62,6 +173,7 @@ def prefetch_ticker_data():
                 print(f"Failed to prefetch {symbol}")
         except Exception as e:
             print(f"Error prefetching {symbol}: {e}")
+    save_prefetched_data_to_csv()
 
 # Endpoint 1: Get ticker data for charting
 @app.get("/ticker_data")
@@ -76,6 +188,7 @@ def get_ticker_data(symbol: str = Query(..., description="Ticker symbol, e.g. AA
                 return {"error": "Could not fetch data for symbol."}
             df = predictor.data.tail(days)
             ticker_data_cache[symbol] = predictor.data.copy()
+            save_prefetched_data_to_csv()
         # Fix: ensure index is serializable (convert DatetimeIndex to string)
         df = df.copy()
         if not df.empty:
@@ -121,22 +234,18 @@ def get_prediction_data(symbol: str = Query(..., description="Ticker symbol, e.g
     except Exception as e:
         return {"error": str(e), "trace": traceback.format_exc()}
 
-# For local testing
-if __name__ == "__main__":
-    uvicorn.run("stock_prediction_api:app", host="0.0.0.0", port=8000, reload=True)
-from fastapi import FastAPI, Query
-from pydantic import BaseModel
-from typing import Optional
-import uvicorn
-import traceback
+# Endpoint: Save user preference (POST)
+from fastapi import Body
+from typing import Dict
 
-# Import the StockPredictor class from the current file
-from stock_prediction_rf import StockPredictor
-
-
-class PredictionRequest(BaseModel):
+class UserPreferenceRequest(BaseModel):
     symbol: str
-    lookback_days: Optional[int] = 10
+
+@app.post("/save_preference")
+def save_user_preference(req: UserPreferenceRequest):
+    user_preferences.add(req.symbol)
+    save_user_preferences_to_csv()
+    return {"status": "success"}
 
 @app.post("/predict")
 def predict_stock(req: PredictionRequest):
@@ -149,7 +258,13 @@ def predict_stock(req: PredictionRequest):
         prediction = predictor.predict_next_day()
         if prediction is None:
             return {"error": "Prediction failed."}
-        advice = predictor.get_investment_advice(prediction)
+        # Determine user risk appetite based on like status
+        if req.symbol in user_preferences:
+            risk_appetite = "high"
+        else:
+            risk_appetite = "low"
+        # Generate advice based on both prediction and risk appetite
+        advice = generate_precise_advice(prediction, risk_appetite)
         direction_text = predictor.get_direction_text(prediction['direction'])
         return {
             "symbol": req.symbol,
@@ -164,6 +279,34 @@ def predict_stock(req: PredictionRequest):
     except Exception as e:
         return {"error": str(e), "trace": traceback.format_exc()}
 
+# Helper: Generate advice based on prediction and user risk appetite
+
+def generate_precise_advice(prediction, risk_appetite):
+    pred_price = prediction.get('predicted_price')
+    curr_price = prediction.get('current_price')
+    pred_return = prediction.get('predicted_return')
+    direction = prediction.get('direction')
+    confidence = prediction.get('confidence')
+    # Example logic:
+    if pred_price is None or curr_price is None:
+        return "Not enough data for advice."
+    if risk_appetite == "high":
+        if direction == 1 and pred_return > 0.01 and confidence > 0.6:
+            return "Aggressive buy: Model predicts strong upward movement."
+        elif direction == 1:
+            return "Buy: Model predicts price increase."
+        elif direction == -1 and pred_return < -0.01:
+            return "Consider selling: Model predicts a drop."
+        else:
+            return "Hold: No strong signal."
+    else:  # low risk appetite
+        if direction == 1 and pred_return > 0.02 and confidence > 0.7:
+            return "Buy (conservative): Model predicts a solid upward trend."
+        elif direction == -1 and pred_return < -0.01:
+            return "Sell: Model predicts a possible drop."
+        else:
+            return "Hold: Wait for a clearer signal."
+# ...existing code...
 # For local testing
 if __name__ == "__main__":
     uvicorn.run("stock_prediction_api:app", host="0.0.0.0", port=8000, reload=True)
