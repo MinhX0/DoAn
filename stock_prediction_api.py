@@ -4,15 +4,18 @@ from typing import Optional
 import uvicorn
 import traceback
 import pandas as pd
+import openai
+import os
 
 # Import the StockPredictor class from the current file
 from stock_prediction_rf import StockPredictor
+from chatgpt_ticker_suggest import get_similar_tickers_from_gemini
 
 
 
 # Global cache for ticker data
 ticker_data_cache = {}
-DEFAULT_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
+DEFAULT_TICKERS = ["VCB.VN", "VIC.VN", "VHM.VN", "HPG.VN", "FPT.VN"] 
 
 # CSV file paths
 TICKER_DATA_CSV = "prefetched_ticker_data.csv"
@@ -306,7 +309,19 @@ def generate_precise_advice(prediction, risk_appetite):
             return "Sell: Model predicts a possible drop."
         else:
             return "Hold: Wait for a clearer signal."
-# ...existing code...
+
+
+@app.get("/suggest_similar_tickers", tags=["Discovery"], summary="Suggest similar tickers using ChatGPT")
+def suggest_similar_tickers():
+    """
+    Suggests similar tickers to those liked by the user, using ChatGPT API.
+    """
+    liked_tickers = list(user_preferences)
+    if not liked_tickers:
+        return {"error": "No liked tickers found."}
+    similar_tickers = get_similar_tickers_from_gemini(liked_tickers)
+    return {"liked_tickers": liked_tickers, "suggested_tickers": similar_tickers}
+
 # For local testing
 if __name__ == "__main__":
     uvicorn.run("stock_prediction_api:app", host="0.0.0.0", port=8000, reload=True)
