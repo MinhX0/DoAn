@@ -24,7 +24,7 @@ user_preferences = set()
 app = FastAPI()
 
 # Endpoint: Get all tickers with current price and up/down indicator
-@app.get("/ticker_status")
+@app.get("/ticker_status") 
 def get_ticker_status():
     result = []
     for symbol in DEFAULT_TICKERS:
