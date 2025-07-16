@@ -182,3 +182,5 @@ cython_debug/
 .vscode
 .github
 .__pycache__
+user_preferences.csv
+prefetched_ticker_data.csv
