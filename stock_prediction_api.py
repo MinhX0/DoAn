@@ -258,39 +258,6 @@ def save_user_preference(req: UserPreferenceRequest):
     save_user_preferences_to_csv()
     return {"status": "success"}
 
-@app.post("/predict")
-def predict_stock(req: PredictionRequest):
-    try:
-        predictor = StockPredictor(req.symbol, lookback_days=req.lookback_days)
-        if not predictor.fetch_data():
-            return {"error": "Could not fetch data for symbol."}
-        if not predictor.train_model():
-            return {"error": "Not enough data to train model."}
-        prediction = predictor.predict_next_day()
-        if prediction is None:
-            return {"error": "Prediction failed."}
-        # Determine user risk appetite based on like status
-        if req.symbol in user_preferences:
-            risk_appetite = "high"
-        else:
-            risk_appetite = "low"
-        # Generate advice based on both prediction and risk appetite
-        advice = generate_precise_advice(prediction, risk_appetite)
-        direction_text = predictor.get_direction_text(prediction['direction'])
-        return {
-            "symbol": req.symbol,
-            "current_price": prediction['current_price'],
-            "predicted_price": prediction['predicted_price'],
-            "predicted_return": prediction['predicted_return'],
-            "direction": direction_text,
-            "confidence": prediction['confidence'],
-            "probabilities": list(prediction['probabilities']),
-            "advice": advice
-        }
-    except Exception as e:
-        return {"error": str(e), "trace": traceback.format_exc()}
-
-# Helper: Generate advice based on prediction and user risk appetite
 
 def generate_precise_advice(prediction, risk_appetite):
     pred_price = prediction.get('predicted_price')
