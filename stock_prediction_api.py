@@ -15,8 +15,7 @@ from chatgpt_ticker_suggest import get_similar_tickers_from_gemini
 
 # Global cache for ticker data
 ticker_data_cache = {}
-DEFAULT_TICKERS = ["VCB.VN", "VIC.VN", "VHM.VN", "HPG.VN", "FPT.VN"] 
-
+DEFAULT_TICKERS = ["VCB.VN", "VIC.VN", "VHM.VN", "HPG.VN", "FPT.VN", "BID.VN", "GAS.VN", "VNM.VN", "TCB.VN", "CTG.VN", "VPB.VN", "MBB.VN", "ACB.VN", "MSN.VN", "MWG.VN", "GVR.VN", "STB.VN", "HDB.VN", "SSI.VN", "VRE.VN", "SAB.VN", "PLX.VN", "VJC.VN", "TPB.VN", "POW.VN", "DGC.VN", "PNJ.VN", "BVH.VN", "REE.VN", "KDH.VN", "EIB.VN", "OCB.VN", "MSB.VN", "LPB.VN", "SHB.VN", "VIB.VN", "PDR.VN", "DXG.VN", "HSG.VN", "PC1.VN"]
 # CSV file paths
 TICKER_DATA_CSV = "prefetched_ticker_data.csv"
 USER_PREF_CSV = "user_preferences.csv"
@@ -31,37 +30,32 @@ app = FastAPI()
 def get_ticker_status():
     result = []
     for symbol in DEFAULT_TICKERS:
-        # Try to get latest data from cache
         df = ticker_data_cache.get(symbol)
         price = None
         prev_price = None
-        if df is not None and not df.empty:
-            # Assume last row is the latest
-            last_row = df.iloc[-1]
-            price = last_row['Close'] if 'Close' in last_row else None
-            # Try to get previous close for up/down
-            if len(df) > 1:
-                prev_row = df.iloc[-2]
-                prev_price = prev_row['Close'] if 'Close' in prev_row else None
-        else:
-            # Fallback: fetch data
+        # Try cache first, then fetch if needed
+        if df is None or df.empty or 'Close' not in df.columns:
             predictor = StockPredictor(symbol)
             if not predictor.fetch_data():
                 result.append({"symbol": symbol, "price": None, "indicator": "unknown"})
                 continue
             df = predictor.data
-            if df is not None and not df.empty:
-                last_row = df.iloc[-1]
-                price = last_row['Close'] if 'Close' in last_row else None
-                if len(df) > 1:
-                    prev_row = df.iloc[-2]
-                    prev_price = prev_row['Close'] if 'Close' in prev_row else None
+            if df is not None and not df.empty and 'Close' in df.columns:
                 ticker_data_cache[symbol] = df.copy()
                 save_prefetched_data_to_csv()
             else:
                 result.append({"symbol": symbol, "price": None, "indicator": "unknown"})
                 continue
-        # Clean up price values: convert NaN/inf to None, and cast to float
+        # Now df should be valid
+        try:
+            last_row = df.iloc[-1]
+            price = last_row['Close'] if 'Close' in last_row else None
+            if len(df) > 1:
+                prev_row = df.iloc[-2]
+                prev_price = prev_row['Close'] if 'Close' in prev_row else None
+        except Exception:
+            price = None
+            prev_price = None
         def safe_float(val):
             try:
                 f = float(val)
@@ -72,7 +66,6 @@ def get_ticker_status():
                 return None
         price = safe_float(price)
         prev_price = safe_float(prev_price)
-        # Determine up/down/unknown
         if price is not None and prev_price is not None:
             if price > prev_price:
                 indicator = "up"
@@ -158,40 +151,55 @@ def load_user_preferences_from_csv():
     except Exception as e:
         print(f"No user preferences found: {e}")
 
+
+# Helper: Check if cache file is from today
+import datetime
+def is_cache_file_from_today(file_path):
+    if not os.path.exists(file_path):
+        return False
+    file_date = datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).date()
+    today = datetime.date.today()
+    return file_date == today
+
 # Prefetch ticker data at startup
 @app.on_event("startup")
 def prefetch_ticker_data():
     print("Prefetching ticker data for:", DEFAULT_TICKERS)
-    load_prefetched_data_from_csv()
+    cache_is_fresh = is_cache_file_from_today(TICKER_DATA_CSV)
+    if cache_is_fresh:
+        load_prefetched_data_from_csv()
+        print(f"Loaded ticker data cache from {TICKER_DATA_CSV} (today)")
+    else:
+        print(f"Cache file {TICKER_DATA_CSV} missing or outdated. Fetching new data...")
+        for symbol in DEFAULT_TICKERS:
+            try:
+                predictor = StockPredictor(symbol)
+                if predictor.fetch_data():
+                    ticker_data_cache[symbol] = predictor.data.copy()
+                    print(f"Prefetched {symbol} ({len(predictor.data)} rows)")
+                else:
+                    print(f"Failed to prefetch {symbol}")
+            except Exception as e:
+                print(f"Error prefetching {symbol}: {e}")
+        save_prefetched_data_to_csv()
     load_user_preferences_from_csv()
-    for symbol in DEFAULT_TICKERS:
-        if symbol in ticker_data_cache:
-            continue
-        try:
-            predictor = StockPredictor(symbol)
-            if predictor.fetch_data():
-                ticker_data_cache[symbol] = predictor.data.copy()
-                print(f"Prefetched {symbol} ({len(predictor.data)} rows)")
-            else:
-                print(f"Failed to prefetch {symbol}")
-        except Exception as e:
-            print(f"Error prefetching {symbol}: {e}")
-    save_prefetched_data_to_csv()
 
 # Endpoint 1: Get ticker data for charting
 @app.get("/ticker_data")
 def get_ticker_data(symbol: str = Query(..., description="Ticker symbol, e.g. AAPL"), days: int = Query(30, description="Number of days to fetch")):
     try:
-        df = None
-        if symbol in ticker_data_cache:
-            df = ticker_data_cache[symbol].tail(days)
-        else:
+        df = ticker_data_cache.get(symbol)
+        if df is None or df.empty or 'Close' not in df.columns:
             predictor = StockPredictor(symbol)
             if not predictor.fetch_data():
                 return {"error": "Could not fetch data for symbol."}
-            df = predictor.data.tail(days)
-            ticker_data_cache[symbol] = predictor.data.copy()
-            save_prefetched_data_to_csv()
+            df = predictor.data
+            if df is not None and not df.empty and 'Close' in df.columns:
+                ticker_data_cache[symbol] = df.copy()
+                save_prefetched_data_to_csv()
+            else:
+                return {"error": "No valid data for symbol."}
+        df = df.tail(days)
         # Fix: ensure index is serializable (convert DatetimeIndex to string)
         df = df.copy()
         if not df.empty:
@@ -319,8 +327,32 @@ def suggest_similar_tickers():
     liked_tickers = list(user_preferences)
     if not liked_tickers:
         return {"error": "No liked tickers found."}
-    similar_tickers = get_similar_tickers_from_gemini(liked_tickers)
+    similar_tickers = get_similar_tickers_from_gemini(liked_tickers, DEFAULT_TICKERS)
     return {"liked_tickers": liked_tickers, "suggested_tickers": similar_tickers}
+
+@app.get("/ticker_closing_prices", summary="Get closing prices for a ticker")
+def get_ticker_closing_prices(symbol: str = Query(..., description="Ticker symbol, e.g. VCB.VN"), days: int = Query(30, description="Number of days to fetch")):
+    """
+    Returns a list of closing prices for the given ticker, for the specified number of days (most recent first).
+    """
+    try:
+        df = None
+        if symbol in ticker_data_cache:
+            df = ticker_data_cache[symbol].tail(days)
+        else:
+            predictor = StockPredictor(symbol)
+            if not predictor.fetch_data():
+                return {"error": "Could not fetch data for symbol."}
+            df = predictor.data.tail(days)
+            ticker_data_cache[symbol] = predictor.data.copy()
+            save_prefetched_data_to_csv()
+        if df is not None and not df.empty and 'Close' in df.columns:
+            closing_prices = [float(x) for x in df['Close'].values.flatten()]
+        else:
+            closing_prices = []
+        return {"symbol": symbol, "closing_prices": closing_prices}
+    except Exception as e:
+        return {"error": str(e), "trace": traceback.format_exc()}
 
 # For local testing
 if __name__ == "__main__":

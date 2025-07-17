@@ -5,10 +5,10 @@ import ast
 import re
 import traceback
 
-def get_similar_tickers_from_gemini(liked_tickers):
+def get_similar_tickers_from_gemini(liked_tickers, ticker_list):
     api_key = os.getenv("GOOGLE_GEMINI_API_KEY", "AIzaSyC0yEBIWflQgoeTcrv6ASQBuOx58oUNkW4")
     prompt = (
-        f"Given these stock tickers: {', '.join(liked_tickers)}, "
+        f"Given these user preference stock tickers: {', '.join(liked_tickers)} and this list of default tickers: {', '.join(ticker_list)}"
         "suggest 5 other VietNam stock tickers that are similar in sector, industry, or business model. "
         "Return only the ticker symbols as a Python list."
     )
