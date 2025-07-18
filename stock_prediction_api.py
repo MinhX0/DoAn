@@ -17,7 +17,6 @@ from chatgpt_ticker_suggest import get_similar_tickers_from_gemini
 ticker_data_cache = {}
 DEFAULT_TICKERS = ["VCB.VN", "VIC.VN", "VHM.VN", "HPG.VN", "FPT.VN", "BID.VN", "GAS.VN", "VNM.VN", "TCB.VN", "CTG.VN", "VPB.VN", "MBB.VN", "ACB.VN", "MSN.VN", "MWG.VN", "GVR.VN", "STB.VN", "HDB.VN", "SSI.VN", "VRE.VN", "SAB.VN", "PLX.VN", "VJC.VN", "TPB.VN", "POW.VN", "DGC.VN", "PNJ.VN", "BVH.VN", "REE.VN", "KDH.VN", "EIB.VN", "OCB.VN", "MSB.VN", "LPB.VN", "SHB.VN", "VIB.VN", "PDR.VN", "DXG.VN", "HSG.VN", "PC1.VN"]
 # CSV file paths
-TICKER_DATA_CSV = "prefetched_ticker_data.csv"
 USER_PREF_CSV = "user_preferences.csv"
 
 # User preferences cache (in-memory, loaded from CSV)
@@ -42,7 +41,6 @@ def get_ticker_status():
             df = predictor.data
             if df is not None and not df.empty and 'Close' in df.columns:
                 ticker_data_cache[symbol] = df.copy()
-                save_prefetched_data_to_csv()
             else:
                 result.append({"symbol": symbol, "price": None, "indicator": "unknown"})
                 continue
@@ -113,27 +111,7 @@ def get_prediction_data(symbol: str = Query(..., description="Ticker symbol, e.g
 
 
 
-# Helper: Save all prefetched ticker data to CSV (one file, with symbol column)
-def save_prefetched_data_to_csv():
-    all_data = []
-    for symbol, df in ticker_data_cache.items():
-        df = df.copy()
-        df['symbol'] = symbol
-        all_data.append(df)
-    if all_data:
-        full_df = pd.concat(all_data)
-        full_df.to_csv(TICKER_DATA_CSV, index=False)
-
-# Helper: Load prefetched ticker data from CSV
-def load_prefetched_data_from_csv():
-    try:
-        df = pd.read_csv(TICKER_DATA_CSV)
-        for symbol in df['symbol'].unique():
-            ticker_data_cache[symbol] = df[df['symbol'] == symbol].drop(columns=['symbol'])
-        print(f"Loaded prefetched ticker data from {TICKER_DATA_CSV}")
-    except Exception as e:
-        print(f"No prefetched ticker data found: {e}")
-
+# Helper: Save all prefetched ticker data to CSV (one file, with symbol column)# Helper: Load prefetched ticker data from CSV
 # Helper: Save user preferences to CSV
 def save_user_preferences_to_csv():
     if user_preferences:
@@ -153,41 +131,29 @@ def load_user_preferences_from_csv():
 
 
 # Helper: Check if cache file is from today
-import datetime
-def is_cache_file_from_today(file_path):
-    if not os.path.exists(file_path):
-        return False
-    file_date = datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).date()
-    today = datetime.date.today()
-    return file_date == today
+
 
 # Prefetch ticker data at startup
 @app.on_event("startup")
 def prefetch_ticker_data():
     print("Prefetching ticker data for:", DEFAULT_TICKERS)
-    cache_is_fresh = is_cache_file_from_today(TICKER_DATA_CSV)
-    if cache_is_fresh:
-        load_prefetched_data_from_csv()
-        print(f"Loaded ticker data cache from {TICKER_DATA_CSV} (today)")
-    else:
-        print(f"Cache file {TICKER_DATA_CSV} missing or outdated. Fetching new data...")
-        for symbol in DEFAULT_TICKERS:
-            try:
-                predictor = StockPredictor(symbol)
-                if predictor.fetch_data():
-                    ticker_data_cache[symbol] = predictor.data.copy()
-                    print(f"Prefetched {symbol} ({len(predictor.data)} rows)")
-                else:
-                    print(f"Failed to prefetch {symbol}")
-            except Exception as e:
-                print(f"Error prefetching {symbol}: {e}")
-        save_prefetched_data_to_csv()
+    for symbol in DEFAULT_TICKERS:
+        try:
+            predictor = StockPredictor(symbol)
+            if predictor.fetch_data():
+                ticker_data_cache[symbol] = predictor.data.copy()
+                print(f"Prefetched {symbol} ({len(predictor.data)} rows)")
+            else:
+                print(f"Failed to prefetch {symbol}")
+        except Exception as e:
+            print(f"Error prefetching {symbol}: {e}")
     load_user_preferences_from_csv()
 
 # Endpoint 1: Get ticker data for charting
 @app.get("/ticker_data")
 def get_ticker_data(symbol: str = Query(..., description="Ticker symbol, e.g. AAPL"), days: int = Query(30, description="Number of days to fetch")):
     try:
+        import yfinance as yf
         df = ticker_data_cache.get(symbol)
         if df is None or df.empty or 'Close' not in df.columns:
             predictor = StockPredictor(symbol)
@@ -196,10 +162,16 @@ def get_ticker_data(symbol: str = Query(..., description="Ticker symbol, e.g. AA
             df = predictor.data
             if df is not None and not df.empty and 'Close' in df.columns:
                 ticker_data_cache[symbol] = df.copy()
-                save_prefetched_data_to_csv()
             else:
                 return {"error": "No valid data for symbol."}
         df = df.tail(days)
+        # Get company name using yfinance (do not cache)
+        try:
+            ticker_obj = yf.Ticker(symbol)
+            info = ticker_obj.info
+            company_name = info.get('shortName') or info.get('longName') or info.get('name') or symbol
+        except Exception:
+            company_name = symbol
         # Fix: ensure index is serializable (convert DatetimeIndex to string)
         df = df.copy()
         if not df.empty:
@@ -214,7 +186,7 @@ def get_ticker_data(symbol: str = Query(..., description="Ticker symbol, e.g. AA
             data = df.applymap(lambda x: x.item() if hasattr(x, 'item') else x).to_dict(orient="records")
         else:
             data = []
-        return {"symbol": symbol, "data": data}
+        return {"symbol": symbol, "company_name": company_name, "data": data}
     except Exception as e:
         return {"error": str(e), "trace": traceback.format_exc()}
 
@@ -312,7 +284,6 @@ def get_ticker_closing_prices(symbol: str = Query(..., description="Ticker symbo
                 return {"error": "Could not fetch data for symbol."}
             df = predictor.data.tail(days)
             ticker_data_cache[symbol] = predictor.data.copy()
-            save_prefetched_data_to_csv()
         if df is not None and not df.empty and 'Close' in df.columns:
             closing_prices = [float(x) for x in df['Close'].values.flatten()]
         else:

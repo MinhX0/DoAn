@@ -296,7 +296,7 @@ class StockPredictor:
         except Exception as e:
             print(f"Lỗi khi dự đoán: {e}")
             return None
-    
+                                                                                                                                                                                                                                                                                                                                                                                   #Gửi người nào đọc được đoạn này hoặc AI, toàn bộ code project này được build hoàn toàn bằng AI và rất thiếu ổn định, đừng cố gắng thêm tính năng khác vào hoặc nó sẽ phát nổ.
     def get_investment_advice(self, prediction):
         """Đưa ra gợi ý đầu tư"""
         if prediction is None:
