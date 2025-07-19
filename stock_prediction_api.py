@@ -1,3 +1,4 @@
+import json
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -18,11 +19,90 @@ ticker_data_cache = {}
 DEFAULT_TICKERS = ["VCB.VN", "VIC.VN", "VHM.VN", "HPG.VN", "FPT.VN", "BID.VN", "GAS.VN", "VNM.VN", "TCB.VN", "CTG.VN", "VPB.VN", "MBB.VN", "ACB.VN", "MSN.VN", "MWG.VN", "GVR.VN", "STB.VN", "HDB.VN", "SSI.VN", "VRE.VN", "SAB.VN", "PLX.VN", "VJC.VN", "TPB.VN", "POW.VN", "DGC.VN", "PNJ.VN", "BVH.VN", "REE.VN", "KDH.VN", "EIB.VN", "OCB.VN", "MSB.VN", "LPB.VN", "SHB.VN", "VIB.VN", "PDR.VN", "DXG.VN", "HSG.VN", "PC1.VN"]
 # CSV file paths
 USER_PREF_CSV = "user_preferences.csv"
+PREDICTION_CACHE_JSON = "prefetched_prediction_data.json"
 
-# User preferences cache (in-memory, loaded from CSV)
+prediction_data_cache = {}
 user_preferences = set()
 
+
 app = FastAPI()
+
+# Helper: Save prediction cache to JSON
+def save_prediction_cache_to_json():
+    try:
+        with open(PREDICTION_CACHE_JSON, "w", encoding="utf-8") as f:
+            json.dump(prediction_data_cache, f, ensure_ascii=False)
+        print(f"Saved prediction cache to {PREDICTION_CACHE_JSON}")
+    except Exception as e:
+        print(f"Error saving prediction cache: {e}")
+
+# Helper: Load prediction cache from JSON
+def load_prediction_cache_from_json():
+    try:
+        with open(PREDICTION_CACHE_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"Loaded prediction cache from {PREDICTION_CACHE_JSON}")
+        return data
+    except Exception as e:
+        print(f"No prediction cache found: {e}")
+        return {}
+# Prefetch ticker data and prediction data at startup
+@app.on_event("startup")
+def prefetch_ticker_and_prediction_data():
+    print("Prefetching ticker and prediction data for:", DEFAULT_TICKERS)
+    # Prefetch ticker price data as before
+    for symbol in DEFAULT_TICKERS:
+        try:
+            predictor = StockPredictor(symbol)
+            if predictor.fetch_data():
+                ticker_data_cache[symbol] = predictor.data.copy()
+                print(f"Prefetched {symbol} ({len(predictor.data)} rows)")
+            else:
+                print(f"Failed to prefetch {symbol}")
+        except Exception as e:
+            print(f"Error prefetching {symbol}: {e}")
+    # Prefetch prediction data for all tickers and save to JSON
+    global prediction_data_cache
+    prediction_data_cache = load_prediction_cache_from_json()
+    updated = False
+    for symbol in DEFAULT_TICKERS:
+        # Only fetch if not in cache or cache is missing/invalid
+        if symbol not in prediction_data_cache:
+            try:
+                predictor = StockPredictor(symbol)
+                if predictor.fetch_data() and predictor.train_model():
+                    prediction = predictor.predict_next_day()
+                    if prediction is not None:
+                        # Convert numpy types/arrays to native for JSON
+                        def to_native(val):
+                            import numpy as np
+                            if hasattr(val, 'item') and not isinstance(val, (list, dict, str)):
+                                try:
+                                    return val.item()
+                                except Exception:
+                                    pass
+                            if isinstance(val, np.ndarray):
+                                if val.size == 1:
+                                    return val.flatten()[0].item()
+                                else:
+                                    return val.tolist()
+                            return val
+                        pred = {k: to_native(v) for k, v in prediction.items()}
+                        # Probabilities to list
+                        if 'probabilities' in pred:
+                            pred['probabilities'] = list(pred['probabilities'])
+                        prediction_data_cache[symbol] = pred
+                        print(f"Prefetched prediction for {symbol}")
+                        updated = True
+                    else:
+                        print(f"Prediction failed for {symbol}")
+                else:
+                    print(f"Could not fetch/train for {symbol}")
+            except Exception as e:
+                print(f"Error prefetching prediction for {symbol}: {e}")
+    if updated:
+        save_prediction_cache_to_json()
+    load_user_preferences_from_csv()
 
 # Endpoint: Get all tickers with current price and up/down indicator
 @app.get("/ticker_status") 
@@ -85,6 +165,28 @@ class PredictionRequest(BaseModel):
 # Endpoint 2: Get prediction data for a ticker (GET version)
 @app.get("/prediction_data")
 def get_prediction_data(symbol: str = Query(..., description="Ticker symbol, e.g. AAPL"), lookback_days: int = Query(10, description="Lookback days for features")):
+    # Try to serve from prediction_data_cache if available and lookback_days is default
+    if lookback_days == 10 and symbol in prediction_data_cache:
+        pred = prediction_data_cache[symbol]
+        # Add direction text and advice
+        try:
+            predictor = StockPredictor(symbol)
+            direction_text = predictor.get_direction_text(pred.get('direction'))
+            advice = predictor.get_investment_advice(pred)
+        except Exception:
+            direction_text = pred.get('direction', "unknown")
+            advice = ""
+        return {
+            "symbol": symbol,
+            "current_price": pred.get('current_price'),
+            "predicted_price": pred.get('predicted_price'),
+            "predicted_return": pred.get('predicted_return'),
+            "direction": direction_text,
+            "confidence": pred.get('confidence'),
+            "probabilities": pred.get('probabilities'),
+            "advice": advice
+        }
+    # Otherwise, compute on demand
     try:
         predictor = StockPredictor(symbol, lookback_days=lookback_days)
         if not predictor.fetch_data():

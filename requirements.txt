@@ -5,3 +5,5 @@ matplotlib
 fastapi
 uvicorn
 openai
+google-genai
+python-dotenv
