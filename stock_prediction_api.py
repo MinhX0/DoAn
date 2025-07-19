@@ -230,6 +230,16 @@ def save_user_preference(req: UserPreferenceRequest):
     save_user_preferences_to_csv()
     return {"status": "success"}
 
+@app.post("/remove_preference")
+def remove_user_preference(req: UserPreferenceRequest):
+    user_preferences.discard(req.symbol)
+    save_user_preferences_to_csv()
+    return {"status": "success"}
+
+# Endpoint: Get user preferences (GET)  
+@app.get("/get_preferences")
+def get_user_preferences():
+    return {"preferences": list(user_preferences)}
 
 def generate_precise_advice(prediction, risk_appetite):
     pred_price = prediction.get('predicted_price')
