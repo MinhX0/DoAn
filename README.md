@@ -20,3 +20,6 @@ This project predicts stock prices for multiple tickers using Random Forest. It 
 
 ## Customization
 - Edit the `TICKERS` list in `stock_predictor.py` to change the stocks to predict.
+
+## Create docker image
+- Open cmd in vscode and type 'docker build -t stock-prediction-app .'
